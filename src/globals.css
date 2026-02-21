@@ -1,0 +1,204 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light Mode Palette */
+    --background: 0 0% 100%; /* Pure white */
+    --foreground: 220 12% 15%; /* Richer dark gray for text */
+
+    --card: 0 0% 100%; /* White */
+    --card-foreground: 220 12% 15%;
+
+    --popover: 0 0% 100%; /* White */
+    --popover-foreground: 220 12% 15%;
+
+    --primary: 25 95% 53%; /* Vibrant Orange */
+    --primary-foreground: 0 0% 100%; /* White text on primary */
+
+    --secondary: 210 20% 96%; /* Soft light gray */
+    --secondary-foreground: 220 12% 15%;
+
+    --muted: 210 20% 92%; /* Slightly darker soft light gray */
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 210 20% 96%; /* Soft light gray */
+    --accent-foreground: 220 12% 15%;
+
+    --destructive: 0 84.2% 60.2%; /* Red */
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 210 20% 88%; /* Medium light gray */
+    --input: 210 20% 96%; /* Soft light gray */
+    --ring: 25 95% 53%; /* Orange ring */
+
+    --radius: 0.5rem;
+
+    /* Sidebar colors for light mode */
+    --sidebar-background: 0 0% 98%; /* Very light gray */
+    --sidebar-foreground: 220 12% 15%;
+    --sidebar-primary: 25 95% 53%; /* Orange for active item */
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 20% 96%;
+    --sidebar-accent-foreground: 220 12% 15%;
+    --sidebar-border: 210 20% 88%;
+    --sidebar-ring: 217.2 91.2% 59.8%; /* Neon blue for ring */
+
+    --neon-blue: 217 91.2% 59.8%; /* Vibrant blue for neon effects */
+    --neon-blue-light: 217 91.2% 70%; /* Lighter shade for subtle glow */
+
+    /* Gradient colors for light mode */
+    --gradient-start: 210 80% 95%; /* Light blueish */
+    --gradient-end: 180 80% 90%; /* Light tealish */
+  }
+
+  .dark {
+    /* Dark Mode Palette - Adjusted to match image */
+    --background: 220 20% 10%; /* Dark blue */
+    --foreground: 210 20% 90%; /* Soft off-white for text */
+
+    --card: 220 20% 14%; /* Slightly lighter dark blue for cards */
+    --card-foreground: 210 20% 90%;
+
+    --popover: 220 20% 14%;
+    --popover-foreground: 210 20% 90%;
+
+    --primary: 25 95% 53%; /* Vibrant Orange */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 20% 20%; /* Darker blue-gray secondary */
+    --secondary-foreground: 210 20% 90%;
+
+    --muted: 220 20% 25%; /* Slightly lighter dark blue-gray muted */
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 220 20% 20%; /* Darker blue-gray accent */
+    --accent-foreground: 210 20% 90%;
+
+    --destructive: 0 62.8% 30.6%; /* Red */
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 220 20% 30%; /* Medium dark blue-gray */
+    --input: 220 20% 20%; /* Dark input background */
+    --ring: 25 95% 53%; /* Orange ring */
+
+    /* Sidebar colors for dark mode */
+    --sidebar-background: 220 20% 10%; /* Same as background for seamless look */
+    --sidebar-foreground: 210 20% 90%;
+    --sidebar-primary: 25 95% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 20% 20%;
+    --sidebar-accent-foreground: 210 20% 90%;
+    --sidebar-border: 220 20% 30%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+
+    --neon-blue: 217 91.2% 59.8%; /* Vibrant blue for neon effects in dark mode */
+    --neon-blue-light: 217 91.2% 70%; /* Lighter shade for subtle glow */
+
+    /* Gradient colors for dark mode - Adjusted to match image's subtle blue/teal spots */
+    --gradient-start: 220 20% 10%; /* Dark blue */
+    --gradient-end: 200 30% 12%; /* Dark tealish blue */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    background-image: linear-gradient(to bottom right, hsl(var(--gradient-start)), hsl(var(--gradient-end)));
+    background-attachment: fixed; /* Ensures gradient covers entire viewport */
+    background-size: cover; /* Ensures the gradient covers the entire body */
+    @apply text-foreground font-sans antialiased transition-colors duration-300;
+  }
+  
+  html {
+    scroll-behavior: smooth;
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    body {
+      background-attachment: scroll;
+    }
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold text-foreground;
+  }
+
+  h1 { @apply text-4xl md:text-5xl; }
+  h2 { @apply text-3xl md:text-4xl; }
+  h3 { @apply text-2xl md:text-3xl; }
+  h4 { @apply text-xl md:text-2xl; }
+  h5 { @apply text-lg md:text-xl; }
+  h6 { @apply text-base md:text-lg; }
+
+  p {
+    @apply leading-relaxed text-muted-foreground;
+  }
+
+  a {
+    @apply text-primary hover:underline transition-colors duration-200;
+  }
+
+  /* General smooth transitions for interactive elements */
+  button, a, input, select, textarea, .card, .collapsible-trigger, .table-row, .popover-content, .dropdown-menu-item {
+    @apply transition-all duration-200 ease-in-out;
+  }
+
+  /* Ensure no permanent neon glow on general borders in dark mode */
+  .dark .border-border {
+    box-shadow: none;
+  }
+
+  /* Neon hover/focus for specific interactive elements in dark mode */
+  .dark .neon-hover:hover {
+    @apply border-neon-blue shadow-neon-glow;
+  }
+
+  .dark .neon-focus:focus-within {
+    @apply border-neon-blue shadow-neon-glow;
+  }
+
+  /* Subtle card shadow for light mode */
+  .card {
+    @apply shadow-sm;
+  }
+  .dark .card {
+    @apply shadow-md shadow-background/20; /* Darker, subtle shadow for depth */
+  }
+
+  /* Custom Scrollbar Styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+    border-radius: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted));
+    border-radius: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+
+  .dark::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+
+  .dark::-webkit-scrollbar-thumb {
+    background: hsl(var(--sidebar-accent));
+  }
+
+  .dark::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--sidebar-accent-foreground));
+  }
+}
