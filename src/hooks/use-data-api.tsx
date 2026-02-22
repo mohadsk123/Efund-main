@@ -204,6 +204,15 @@ export function useDataApi() {
       window.clearInterval(timer);
     };
   }, [fetchAdminStatus]);
+  useEffect(() => {
+    fetchSchemes();
+    const timer = window.setInterval(() => {
+      fetchSchemes();
+    }, 10000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [fetchSchemes]);
 
   const postWithRetry = async (url: string, payload: unknown) => {
     try {
@@ -403,7 +412,7 @@ export function useDataApi() {
       const signer = await provider.getSigner();
       const abi = [
         "function applyForScheme(uint256)",
-        "function schemes(uint256) view returns (uint256,string,uint256,uint256,uint256,uint256,uint256,uint8,bool)",
+        "function schemes(uint256) view returns (uint256,string,uint256,uint256,uint256,uint256,uint256,uint8,uint256,bool)",
         "function beneficiaries(address) view returns (string,uint256,uint8,uint256,bool,uint256)"
       ];
       const contract = new ethers.Contract(contractMeta.contractAddress, abi, signer);
@@ -419,7 +428,7 @@ export function useDataApi() {
           minAge: s[5] as bigint,
           maxAge: s[6] as bigint,
           genderRequirement: Number(s[7]) as number,
-          isActive: Boolean(s[8]),
+          isActive: Boolean(s[9]),
         };
         const beneficiary = {
           age: b[1] as bigint,
@@ -440,9 +449,11 @@ export function useDataApi() {
           return;
         }
         const ageOk = beneficiary.age >= scheme.minAge && beneficiary.age <= scheme.maxAge;
-        if (!ageOk) {
-          toast.error("Age criteria not met for this scheme");
-          return;
+        if (scheme.minAge > 0n || scheme.maxAge > 0n) {
+          if (!ageOk) {
+            toast.error("Age criteria not met for this scheme");
+            return;
+          }
         }
         if (beneficiary.income > scheme.maxIncomeThreshold) {
           toast.error("Income exceeds threshold for this scheme");

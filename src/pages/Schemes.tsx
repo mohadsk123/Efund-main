@@ -1,14 +1,80 @@
 "use client";
 
+import React from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, ArrowRight, Loader2 } from "lucide-react";
+import { FileText, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useDataApi } from "@/hooks/use-data-api";
 import { Link } from "react-router-dom";
+import { ethers } from "ethers";
 
 const Schemes = () => {
-  const { schemes, isLoadingSchemes } = useDataApi();
+  const { schemes, isLoadingSchemes, contractMeta } = useDataApi();
+  const [applyHashes, setApplyHashes] = React.useState<Record<number, string>>({});
+
+  const apply = async (schemeId: number) => {
+    try {
+      const ethereum = window.ethereum;
+      if (!ethereum) {
+        toast.error("MetaMask not detected");
+        return;
+      }
+      try {
+        const netHex = contractMeta?.chainId ? "0x" + Number(contractMeta.chainId).toString(16) : "0xaa36a7";
+        await ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: netHex }]
+        });
+      } catch (switchError: unknown) {
+        const sw = switchError as { code?: number };
+        if (sw?.code === 4902) {
+          await ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: "0xaa36a7",
+              chainName: "Sepolia",
+              rpcUrls: ["https://eth-sepolia.g.alchemy.com/v2/A0lwY4JVuHJJWvQD9sEyF"],
+              nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
+              blockExplorerUrls: ["https://sepolia.etherscan.io"]
+            }]
+          });
+        } else {
+          throw switchError;
+        }
+      }
+      const ipfsHash = applyHashes[schemeId] || "";
+      if (!ipfsHash.trim()) {
+        toast.error("Provide IPFS hash");
+        return;
+      }
+      const provider = new ethers.BrowserProvider(ethereum);
+      await provider.send("eth_requestAccounts", []);
+      const signer = await provider.getSigner();
+      const contractAddress = contractMeta?.contractAddress || "";
+      if (!/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
+        toast.error("Contract not configured");
+        return;
+      }
+      const abi = [
+        "function applyToScheme(uint256,string)"
+      ];
+      const contract = new ethers.Contract(contractAddress, abi, signer);
+      const tx = await contract.applyToScheme(schemeId, ipfsHash);
+      toast.message("Submitting application...", { description: "Awaiting confirmation on Sepolia" });
+      await tx.wait();
+      toast.success("Application submitted", {
+        description: `Tx: ${tx.hash}`,
+        action: {
+          label: "View",
+          onClick: () => window.open(`https://sepolia.etherscan.io/tx/${tx.hash}`, "_blank")
+        }
+      });
+    } catch (err: unknown) {
+      const e = err as { shortMessage?: string; message?: string };
+      toast.error("Apply failed", { description: e?.shortMessage || e?.message || String(err) });
+    }
+  };
 
   return (
     <div className="flex flex-col gap-8 px-6 py-8 animate-fade-in-up">
@@ -54,7 +120,17 @@ const Schemes = () => {
                     Eligibility: Age {scheme.minAge}-{scheme.maxAge} | Income {"<"} {scheme.maxIncome} ETH
                   </p>
                 </div>
-                <div className="flex gap-2" />
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 border rounded px-2 py-1 text-sm bg-background"
+                    placeholder="ipfs://CID or Qm..."
+                    value={applyHashes[scheme.id] || ""}
+                    onChange={e => setApplyHashes(prev => ({ ...prev, [scheme.id]: e.target.value }))}
+                  />
+                  <Button variant="default" onClick={() => apply(Number(scheme.id))}>
+                    Apply
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )) : (

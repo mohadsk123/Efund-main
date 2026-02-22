@@ -80,11 +80,12 @@ module.exports = {
   networks: {
     sepolia: {
       provider: () =>
-        new HDWalletProvider({
-          privateKeys: [process.env.PRIVATE_KEY],
-          providerOrUrl: process.env.RPC_URL,
-        }),
+        new HDWalletProvider(
+          process.env.PRIVATE_KEY,
+          process.env.RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/A0lwY4JVuHJJWvQD9sEyF"
+        ),
       network_id: 11155111,
+      gas: 8000000,
       confirmations: 2,
       timeoutBlocks: 200,
       skipDryRun: true,
@@ -94,7 +95,9 @@ module.exports = {
   compilers: {
     solc: {
       version: "0.8.20",
+      settings: {
+        optimizer: { enabled: true, runs: 200 }
+      }
     },
   },
 };
-

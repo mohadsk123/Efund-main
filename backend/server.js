@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { ethers } = require('ethers');
+const Web3 = require('web3');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -40,9 +41,9 @@ const ApplicationSchema = new mongoose.Schema({
 const Application = mongoose.model("Application", ApplicationSchema);
 
 // --- Blockchain Configuration ---
-const RPC_URL = process.env.RPC_URL;
+const RPC_URL = process.env.RPC_URL || "https://eth-sepolia.g.alchemy.com/v2/A0lwY4JVuHJJWvQD9sEyF";
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "0xFA02abb7e53Ac4e7bA8ae25532322dF8fBD1da28";
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "0x534cd0E1F43A50020B93A0E8141B4444338Fae9e";
 
 const SIMPLE_MODE = String(process.env.SIMPLE_CONTRACT || "").toLowerCase() === "true";
 const ABI_SIMPLE = [
@@ -53,10 +54,19 @@ const ABI_SIMPLE = [
     "function disburseFunds(address,uint256)",
     "function getBeneficiaryDetails(address) view returns (string,string,bool,uint256)",
     "function getContractBalance() view returns (uint256)",
+    // Simple schemes & applications
+    "function addScheme(string,uint256,uint256)",
+    "function applyToScheme(uint256,string)",
+    "function schemeCount() view returns (uint256)",
+    "function schemes(uint256) view returns (uint256 id, string name, uint256 budget, uint256 deadline, bool isActive)",
+    "function getApplicationsCount(uint256) view returns (uint256)",
+    "function getApplication(uint256,uint256) view returns (address applicant, string ipfsHash, uint256 timestamp)",
     "event BeneficiaryAdded(address indexed beneficiaryAddress, string name, string scheme)",
     "event BeneficiaryApproved(address indexed beneficiaryAddress)",
     "event FundsDisbursed(address indexed beneficiaryAddress, uint256 amount, string scheme)",
-    "event FundsDeposited(address indexed depositor, uint256 amount)"
+    "event FundsDeposited(address indexed depositor, uint256 amount)",
+    "event SchemeAdded(uint256 indexed id, string name, uint256 budget, uint256 deadline)",
+    "event ApplicationCreated(uint256 indexed schemeId, address indexed applicant, string ipfsHash)"
 ];
 const ABI_FULL = [
     "function createScheme(string,uint256,uint256,uint256,uint256,uint8)",
@@ -65,7 +75,7 @@ const ABI_FULL = [
     "function applyForScheme(uint256)",
     "function owner() view returns (address)",
     "function schemeCount() view returns (uint256)",
-    "function schemes(uint256) view returns (uint256 id, string name, uint256 budget, uint256 amountPerBeneficiary, uint256 maxIncomeThreshold, uint256 minAge, uint256 maxAge, uint8 genderRequirement, bool isActive)",
+    "function schemes(uint256) view returns (uint256 id, string name, uint256 budget, uint256 amountPerBeneficiary, uint256 maxIncomeThreshold, uint256 minAge, uint256 maxAge, uint8 genderRequirement, uint256 deadline, bool isActive)",
     "function beneficiaries(address) view returns (string name, uint256 age, uint8 gender, uint256 income, bool isRegistered, uint256 totalReceived)",
     "function getContractBalance() view returns (uint256)",
     "event SchemeCreated(uint256 indexed id, string name, uint256 budget)",
@@ -75,11 +85,17 @@ const ABI_FULL = [
 const ABI = SIMPLE_MODE ? ABI_SIMPLE : ABI_FULL;
 
 let provider, wallet, contract, ethersInitialized = false;
+let web3, contractWeb3;
 try {
     provider = new ethers.JsonRpcProvider(RPC_URL);
     wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
     ethersInitialized = true;
+    web3 = new Web3(RPC_URL);
+    try {
+        const FundDistributionArtifact = require("./build/contracts/FundDistribution.json");
+        contractWeb3 = new web3.eth.Contract(FundDistributionArtifact.abi, CONTRACT_ADDRESS);
+    } catch {}
 } catch (e) { console.error("Ethers init failed", e); }
 
 // --- Admin Configuration ---
@@ -464,6 +480,101 @@ app.get('/api/diagnostics', async (req, res) => {
         res.json(diag);
     } catch (e) {
         res.status(500).json({ message: e.message });
+    }
+});
+
+// --- New Simple REST Endpoints (Sepolia) ---
+// Add Scheme via admin-signed tx using server PRIVATE_KEY
+app.post('/api/scheme', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        if (!ethersInitialized || SIMPLE_MODE !== true) {
+            return res.status(405).json({ message: "Unsupported in current contract mode" });
+        }
+        const { name, budget, deadline } = req.body;
+        if (!name || typeof name !== 'string') return res.status(400).json({ message: "Invalid name" });
+        const b = BigInt(budget);
+        const d = Number(deadline);
+        if (b <= 0n) return res.status(400).json({ message: "Budget must be > 0" });
+        if (!Number.isFinite(d) || d <= Math.floor(Date.now()/1000)) return res.status(400).json({ message: "Deadline must be in future (unix seconds)" });
+        const addr = await wallet.getAddress();
+        const gasEstimate = await contract.estimateGas.addScheme(name, b, d).catch(() => 250000n);
+        const fee = await provider.getFeeData();
+        const tx = await contract.addScheme(name, b, d, {
+            gasLimit: gasEstimate,
+            maxFeePerGas: fee.maxFeePerGas,
+            maxPriorityFeePerGas: fee.maxPriorityFeePerGas
+        });
+        const receipt = await tx.wait();
+        return res.json({ hash: tx.hash, status: receipt.status, blockNumber: receipt.blockNumber });
+    } catch (e) {
+        const msg = e?.shortMessage || e?.message || "Add scheme failed";
+        if (/insufficient funds/i.test(String(msg))) {
+            return res.status(402).json({ message: "Insufficient funds for gas. Fund the admin wallet with Sepolia ETH." });
+        }
+        if (/nonce/i.test(String(msg))) {
+            return res.status(409).json({ message: "Nonce conflict detected. Please retry later." });
+        }
+        return res.status(500).json({ message: msg });
+    }
+});
+
+// Apply to Scheme - expects beneficiary to send directly from MetaMask; alternatively accept signedTx
+app.post('/api/apply', async (req, res) => {
+    try {
+        if (!ethersInitialized || SIMPLE_MODE !== true) {
+            return res.status(405).json({ message: "Unsupported in current contract mode" });
+        }
+        const { signedTx, schemeId, ipfsHash, from } = req.body;
+        if (signedTx) {
+            const r = await provider.sendTransaction(signedTx);
+            const rec = await r.wait();
+            return res.json({ hash: r.hash, status: rec.status });
+        }
+        if (!from || typeof from !== 'string') return res.status(400).json({ message: "Missing from address or signedTx" });
+        if (!Number.isFinite(Number(schemeId))) return res.status(400).json({ message: "Invalid schemeId" });
+        if (!ipfsHash || typeof ipfsHash !== 'string') return res.status(400).json({ message: "Invalid ipfsHash" });
+        const iface = new ethers.Interface(ABI);
+        const data = iface.encodeFunctionData("applyToScheme", [Number(schemeId), ipfsHash]);
+        const gasPrice = await provider.getFeeData();
+        const nonce = await provider.getTransactionCount(from);
+        const txReq = {
+            to: CONTRACT_ADDRESS,
+            data,
+            nonce,
+            gasLimit: 250000n,
+            maxFeePerGas: gasPrice.maxFeePerGas,
+            maxPriorityFeePerGas: gasPrice.maxPriorityFeePerGas,
+            chainId: 11155111,
+            type: 2
+        };
+        return res.status(402).json({ message: "User must sign transaction", txRequest: txReq });
+    } catch (e) {
+        const msg = e?.shortMessage || e?.message || "Apply failed";
+        return res.status(500).json({ message: msg });
+    }
+});
+
+// Read on-chain schemes (simple mode)
+app.get('/api/schemes', async (req, res) => {
+    try {
+        if (!ethersInitialized || SIMPLE_MODE !== true) {
+            return res.status(200).json([]);
+        }
+        const count = await contract.schemeCount();
+        const list = [];
+        for (let i = 1; i <= Number(count); i++) {
+            const s = await contract.schemes(i);
+            list.push({
+                id: Number(s.id),
+                name: s.name,
+                budget: s.budget.toString(),
+                deadline: Number(s.deadline),
+                isActive: s.isActive
+            });
+        }
+        return res.json(list);
+    } catch (e) {
+        return res.json([]);
     }
 });
 app.post('/api/contract/register-profile', authenticateToken, async (req, res) => {
