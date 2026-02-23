@@ -130,6 +130,22 @@ app.use((req, res, next) => {
     next();
 });
 app.use(express.json());
+const sseClients = new Set();
+function sseBroadcast(type, payload) {
+    const msg = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const res of sseClients) {
+        try { res.write(msg); } catch {}
+    }
+}
+app.get('/api/events', (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+    sseClients.add(res);
+    const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 25000);
+    req.on("close", () => { clearInterval(ping); sseClients.delete(res); });
+});
 // Enforce X-Requested-With for state-changing requests
 app.use((req, res, next) => {
     if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
@@ -179,6 +195,7 @@ app.use('/api/contract', (req, res, next) => {
     if (req.method === 'GET') return next();
     return contractLimiter(req, res, next);
 });
+app.use('/api/apply', contractLimiter);
 
 async function authenticateToken(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -264,6 +281,18 @@ app.post('/api/auth/wallet-login', async (req, res) => {
     await user.save();
     res.json({ id: user._id, email: user.email, token, role: user.role });
 });
+app.post('/api/auth/connect-wallet', authenticateToken, async (req, res) => {
+    try {
+        const { address, signature } = req.body;
+        const recovered = ethers.verifyMessage("Connect Wallet to E-Fund", signature);
+        if (recovered.toLowerCase() !== String(address || "").toLowerCase()) return res.status(401).json({ message: "Signature mismatch" });
+        req.user.walletAddress = address;
+        await req.user.save();
+        res.json({ ok: true, walletAddress: address });
+    } catch (e) {
+        res.status(500).json({ message: e.message });
+    }
+});
 
 app.post('/api/auth/logout', async (req, res) => {
     try {
@@ -322,30 +351,16 @@ app.get('/api/contract/disbursements', async (req, res) => {
         if (!ethersInitialized) {
             return res.json([]);
         }
-        let list = [];
-        if (SIMPLE_MODE) {
-            const filter = contract.filters.FundsDisbursed();
-            const events = await contract.queryFilter(filter, -1000);
-            const blocks = await Promise.all(events.map(e => provider.getBlock(e.blockNumber)));
-            list = events.map((e, idx) => ({
-                beneficiaryAddress: e.args[0],
-                amount: ethers.formatEther(e.args[1]),
-                scheme: e.args[2],
-                timestamp: Number(blocks[idx]?.timestamp || 0),
-                hash: e.transactionHash
-            }));
-        } else {
-            const filter = contract.filters.FundsDistributed();
-            const events = await contract.queryFilter(filter, -1000);
-            const blocks = await Promise.all(events.map(e => provider.getBlock(e.blockNumber)));
-            list = events.map((e, idx) => ({
-                beneficiaryAddress: e.args[1],
-                amount: ethers.formatEther(e.args[2]),
-                schemeId: Number(e.args[0]),
-                timestamp: Number(blocks[idx]?.timestamp || 0),
-                hash: e.transactionHash
-            }));
-        }
+        const filter = contract.filters.FundsDisbursed();
+        const events = await contract.queryFilter(filter, -1000);
+        const blocks = await Promise.all(events.map(e => provider.getBlock(e.blockNumber)));
+        const list = events.map((e, idx) => ({
+            beneficiaryAddress: e.args[0],
+            amount: ethers.formatEther(e.args[1]),
+            scheme: e.args[2],
+            timestamp: Number(blocks[idx]?.timestamp || 0),
+            hash: e.transactionHash
+        }));
         res.json(list);
     } catch (e) { res.json([]); }
 });
@@ -384,8 +399,13 @@ app.post('/api/contract/create-scheme', authenticateToken, authorizeAdmin, async
             // If owner not available in ABI/network, continue but errors will be caught below
         }
         const tx = await contract.createScheme(name, ethers.parseEther(amount), ethers.parseEther(maxIncome), minAge, maxAge, gender);
-        await tx.wait();
-        res.json({ hash: tx.hash });
+        const rc = await tx.wait();
+        try {
+            const count = await contract.schemeCount();
+            const s = await contract.schemes(count);
+            sseBroadcast("scheme.created", { id: Number(s.id), name: s.name, budget: ethers.formatEther(s.budget), amount: ethers.formatEther(s.amountPerBeneficiary), maxIncome: ethers.formatEther(s.maxIncomeThreshold), minAge: Number(s.minAge), maxAge: Number(s.maxAge), gender: Number(s.genderRequirement), isActive: Boolean(s.isActive) });
+        } catch {}
+        res.json({ hash: tx.hash, status: rc.status });
     } catch (e) { 
         const msg = e?.shortMessage || e?.message || "Create scheme failed";
         // Common OZ Ownable revert presents as CALL_EXCEPTION with missing revert data during estimateGas
@@ -519,10 +539,10 @@ app.post('/api/scheme', authenticateToken, authorizeAdmin, async (req, res) => {
 });
 
 // Apply to Scheme - expects beneficiary to send directly from MetaMask; alternatively accept signedTx
-app.post('/api/apply', async (req, res) => {
+app.post('/api/apply', authenticateToken, async (req, res) => {
     try {
-        if (!ethersInitialized || SIMPLE_MODE !== true) {
-            return res.status(405).json({ message: "Unsupported in current contract mode" });
+        if (!ethersInitialized) {
+            return res.status(503).json({ message: "Blockchain not configured on server" });
         }
         const { signedTx, schemeId, ipfsHash, from } = req.body;
         if (signedTx) {
@@ -531,10 +551,18 @@ app.post('/api/apply', async (req, res) => {
             return res.json({ hash: r.hash, status: rec.status });
         }
         if (!from || typeof from !== 'string') return res.status(400).json({ message: "Missing from address or signedTx" });
+        if (!req.user?.walletAddress || req.user.walletAddress.toLowerCase() !== String(from).toLowerCase()) return res.status(403).json({ message: "Connect your wallet to your account" });
         if (!Number.isFinite(Number(schemeId))) return res.status(400).json({ message: "Invalid schemeId" });
-        if (!ipfsHash || typeof ipfsHash !== 'string') return res.status(400).json({ message: "Invalid ipfsHash" });
         const iface = new ethers.Interface(ABI);
-        const data = iface.encodeFunctionData("applyToScheme", [Number(schemeId), ipfsHash]);
+        let data;
+        if (SIMPLE_MODE) {
+            if (!ipfsHash || typeof ipfsHash !== 'string') return res.status(400).json({ message: "Invalid ipfsHash" });
+            const h = String(ipfsHash);
+            if (!/^ipfs:\/\//i.test(h) || h.length > 100) return res.status(400).json({ message: "Invalid ipfsHash format" });
+            data = iface.encodeFunctionData("applyToScheme", [Number(schemeId), h]);
+        } else {
+            data = iface.encodeFunctionData("applyForScheme", [Number(schemeId)]);
+        }
         const gasPrice = await provider.getFeeData();
         const nonce = await provider.getTransactionCount(from);
         const txReq = {
@@ -636,6 +664,7 @@ app.post('/api/applications/record', authenticateToken, async (req, res) => {
             schemeName,
             txHash
         }).save();
+        sseBroadcast("application.created", { userId: String(req.user._id), schemeId: Number(schemeId), txHash });
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ message: e.message });
@@ -686,8 +715,63 @@ app.post('/api/contract/approve-beneficiary', authenticateToken, authorizeAdmin,
     try {
         if (applicationId) {
             await Application.findByIdAndUpdate(applicationId, { status: 'Approved' });
+            const appDoc = await Application.findById(applicationId);
+            if (appDoc && appDoc.applicantAddress && ethersInitialized) {
+                if (!SIMPLE_MODE) {
+                    const owner = await contract.owner();
+                    const serverAddr = await wallet.getAddress();
+                    if (owner.toLowerCase() === serverAddr.toLowerCase()) {
+                        await contract.approveBeneficiary(appDoc.applicantAddress);
+                        const s = await contract.schemes(appDoc.schemeId);
+                        const amt = s.amountPerBeneficiary;
+                        const tx = await contract.disburseFunds(appDoc.applicantAddress, amt);
+                        await tx.wait();
+                        await Application.findByIdAndUpdate(applicationId, { status: 'Disbursed' });
+                        sseBroadcast("application.updated", { id: String(applicationId), status: "Disbursed" });
+                    }
+                }
+            }
+            sseBroadcast("application.updated", { id: String(applicationId), status: "Approved" });
         }
         return res.json({ ok: true });
+    } catch (e) { res.status(500).json({ message: e.message }); }
+});
+app.post('/api/admin/applications/approve', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        const { ids } = req.body || {};
+        if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "No application ids" });
+        for (const id of ids) {
+            await Application.findByIdAndUpdate(id, { status: 'Approved' });
+            const appDoc = await Application.findById(id);
+            if (appDoc && appDoc.applicantAddress && ethersInitialized) {
+                if (!SIMPLE_MODE) {
+                    const owner = await contract.owner();
+                    const serverAddr = await wallet.getAddress();
+                    if (owner.toLowerCase() === serverAddr.toLowerCase()) {
+                        await contract.approveBeneficiary(appDoc.applicantAddress);
+                        const s = await contract.schemes(appDoc.schemeId);
+                        const amt = s.amountPerBeneficiary;
+                        const tx = await contract.disburseFunds(appDoc.applicantAddress, amt);
+                        await tx.wait();
+                        await Application.findByIdAndUpdate(id, { status: 'Disbursed' });
+                        sseBroadcast("application.updated", { id: String(id), status: "Disbursed" });
+                    }
+                }
+            }
+            sseBroadcast("application.updated", { id: String(id), status: "Approved" });
+        }
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ message: e.message }); }
+});
+app.post('/api/admin/applications/reject', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        const { ids } = req.body || {};
+        if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ message: "No application ids" });
+        for (const id of ids) {
+            await Application.findByIdAndUpdate(id, { status: 'Rejected' });
+            sseBroadcast("application.updated", { id: String(id), status: "Rejected" });
+        }
+        res.json({ ok: true });
     } catch (e) { res.status(500).json({ message: e.message }); }
 });
 
@@ -770,19 +854,29 @@ app.post('/api/contract/approve-beneficiary-chain', authenticateToken, authorize
 });
 
 app.post('/api/contract/disburse', authenticateToken, authorizeAdmin, async (req, res) => {
-    const { address, amount } = req.body;
+    const { address, amount, schemeId } = req.body;
     try {
-        if (!SIMPLE_MODE) return res.status(405).json({ message: "Not supported in current contract mode" });
         if (!ethersInitialized) return res.status(503).json({ message: "Blockchain not configured on server" });
         if (!/^0x[a-fA-F0-9]{40}$/.test(String(address))) return res.status(400).json({ message: "Invalid address" });
-        const eth = String(amount);
-        if (!eth || Number(eth) <= 0) return res.status(400).json({ message: "Invalid amount" });
         const owner = await contract.owner();
         const serverAddr = await wallet.getAddress();
         if (owner.toLowerCase() !== serverAddr.toLowerCase()) return res.status(403).json({ message: "Only owner can disburse" });
-        const tx = await contract.disburseFunds(address, ethers.parseEther(eth));
-        await tx.wait();
-        res.json({ hash: tx.hash });
+        let amtWei = null;
+        if (amount) {
+            if (Number(String(amount)) <= 0) return res.status(400).json({ message: "Invalid amount" });
+            amtWei = ethers.parseEther(String(amount));
+        } else if (Number.isFinite(Number(schemeId))) {
+            const s = await contract.schemes(schemeId);
+            amtWei = s.amountPerBeneficiary;
+        } else {
+            return res.status(400).json({ message: "Missing amount or schemeId" });
+        }
+        const bal = await contract.getContractBalance();
+        if (bal < amtWei) return res.status(400).json({ message: "Insufficient contract balance" });
+        const tx = await contract.disburseFunds(address, amtWei);
+        const rc = await tx.wait();
+        sseBroadcast("tx.status", { hash: tx.hash, status: rc.status });
+        res.json({ hash: tx.hash, status: rc.status });
     } catch (e) { res.status(500).json({ message: e.message }); }
 });
 

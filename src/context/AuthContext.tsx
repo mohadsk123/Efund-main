@@ -18,6 +18,7 @@ interface AuthContextType {
   register: (email: string, password: string) => Promise<boolean>;
   loginWithGoogle: () => Promise<boolean>;
   loginWithWallet: () => Promise<boolean>;
+  connectWallet: () => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
@@ -170,6 +171,36 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setLoading(false);
     }
   };
+  const connectWallet = async () => {
+    setLoading(true);
+    try {
+      if (!window.ethereum) {
+        toast.error("MetaMask not installed.");
+        return false;
+      }
+      if (!session?.token) {
+        toast.error("Please login first.");
+        return false;
+      }
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      await provider.send("eth_requestAccounts", []);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      const signature = await signer.signMessage("Connect Wallet to E-Fund");
+      const res = await apiClient.post("/auth/connect-wallet", { address, signature }, { headers: { Authorization: `Bearer ${session.token}` } });
+      const updated = { ...session, walletAddress: res.data.walletAddress };
+      localStorage.setItem("efund_session", JSON.stringify(updated));
+      setSession(updated);
+      toast.success("Wallet connected");
+      return true;
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || (err as { message?: string })?.message || "Connect wallet failed";
+      toast.error(message);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const logout = async () => {
     setLoading(true);
@@ -195,6 +226,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         register,
         loginWithGoogle,
         loginWithWallet,
+        connectWallet,
         logout,
       }}
     >

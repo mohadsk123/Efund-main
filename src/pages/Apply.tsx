@@ -6,9 +6,11 @@ import { Button } from "@/components/ui/button";
 import { CheckCircle, Loader2, FileText, Info } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useDataApi } from "@/hooks/use-data-api";
+import { useAuth } from "@/hooks/use-auth";
 
 const Apply = () => {
   const { schemes, isLoadingSchemes, applyForScheme } = useDataApi();
+  const { session, connectWallet } = useAuth();
   const [applyingId, setApplyingId] = useState<number | null>(null);
 
   const handleApply = async (schemeId: number) => {
@@ -28,6 +30,17 @@ const Apply = () => {
       <p className="text-lg text-muted-foreground max-w-2xl">
         View active government schemes and apply directly if you meet the criteria.
       </p>
+      {session && !session.walletAddress && (
+        <Card className="bg-yellow-500/10 border-yellow-500/20 text-yellow-800 dark:text-yellow-300">
+          <CardHeader>
+            <CardTitle className="text-lg">Connect your wallet to receive funds</CardTitle>
+            <CardDescription>Applications are blocked until a wallet is connected.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button className="h-10 text-base" onClick={connectWallet}>Connect Wallet to Receive Funds</Button>
+          </CardContent>
+        </Card>
+      )}
 
       {isLoadingSchemes ? (
         <div className="flex justify-center py-12">
@@ -58,7 +71,7 @@ const Apply = () => {
                     <Button
                       className="flex-1 flex items-center gap-2 h-10 text-base dark:neon-hover"
                       onClick={() => handleApply(scheme.id)}
-                      disabled={applyingId === scheme.id}
+                      disabled={applyingId === scheme.id || !session?.walletAddress}
                     >
                       {applyingId === scheme.id ? (
                         <Loader2 className="h-4 w-4 animate-spin" />

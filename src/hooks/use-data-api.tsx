@@ -213,6 +213,47 @@ export function useDataApi() {
       window.clearInterval(timer);
     };
   }, [fetchSchemes]);
+  useEffect(() => {
+    const base = String(import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api").replace(/\/+$/,'');
+    const eventsUrl = base.replace(/\/api$/,'/api/events');
+    const es = new EventSource(eventsUrl);
+    es.addEventListener("scheme.created", (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data);
+        toast.message("New scheme available", { description: data?.name || "" });
+      } catch (e) { void e; }
+      fetchSchemes();
+    });
+    es.addEventListener("application.created", (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (session && String(data?.userId) === String(session.id)) {
+          toast.success("Application submitted");
+          fetchApplications();
+        }
+      } catch (e) { void e; }
+    });
+    es.addEventListener("application.updated", (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (isAdmin) {
+          fetchAllApplications();
+        } else {
+          fetchApplications();
+        }
+        const s = String(data?.status || "");
+        if (s) toast.message("Application status update", { description: s });
+      } catch (e) { void e; }
+    });
+    es.addEventListener("tx.status", (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data);
+        const status = data?.status === 1 ? "Confirmed" : "Failed";
+        toast.message("Transaction update", { description: status });
+      } catch (e) { void e; }
+    });
+    return () => { es.close(); };
+  }, [session, isAdmin, fetchSchemes, fetchApplications, fetchAllApplications]);
 
   const postWithRetry = async (url: string, payload: unknown) => {
     try {
@@ -523,6 +564,17 @@ export function useDataApi() {
     }
   };
 
+  const bulkUpdateApplications = async (ids: string[], action: "approve" | "reject") => {
+    if (!ids.length) return;
+    try {
+      await apiClient.post(`/admin/applications/${action}`, { ids });
+      refetchAllData();
+    } catch (e: unknown) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || (e as { message?: string })?.message || "Failed to update applications";
+      toast.error(message);
+    }
+  };
+
   const depositFundsToContract = async (amountEth: string, schemeId: number = 1) => {
     try {
       setIsDepositingFunds(true);
@@ -653,6 +705,7 @@ export function useDataApi() {
     registerProfile,
     applyForScheme,
     approveBeneficiary,
+    bulkUpdateApplications,
     depositFundsToContract,
     queryBeneficiaryDetails,
     addBeneficiary,
